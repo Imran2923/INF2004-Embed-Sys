@@ -194,6 +194,8 @@ void run_benchmarks_with_trials(int trials, bool save_per_run, bool save_average
 
     // Optional: chip capability header
     uint8_t id[3]={0}; read_jedec_id(id);
+    char jedec_hex[7];
+    snprintf(jedec_hex, sizeof jedec_hex, "%02X%02X%02X", id[0], id[1], id[2]);
     uint8_t sfdp8[8]={0}; bool has_sfdp = read_sfdp_header(sfdp8);
     printf("# JEDEC=%02X %02X %02X  SFDP=%s\r\n",
            id[0], id[1], id[2], has_sfdp ? "OK" : "N/A");
@@ -282,14 +284,17 @@ void run_benchmarks_with_trials(int trials, bool save_per_run, bool save_average
         }
 
         // Save averages (one row per SPI freq) to benchmark.csv if requested
-        if (save_averages) {
-            bench_csv_append_avg(hz,
-                                 avg_erase_ms,
-                                 avg_prog_mbps * 1024.0,    // KB/s
-                                 avg_readseq_mbps * 1024.0, // KB/s
-                                 avg_readrand_mbps,         // MB/s
-                                 total_verify_errs);
+       if (save_averages) {
+            bench_csv_append_avg(jedec_hex,            // NEW: JEDEC in hex (e.g., "9D4013")
+                         hz,
+                         avg_erase_ms,
+                         avg_prog_mbps * 1024.0,
+                         avg_readseq_mbps * 1024.0,
+                         avg_readrand_mbps,
+                         total_verify_errs);
         }
+
+
     }
 
     if (save_averages) {

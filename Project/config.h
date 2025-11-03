@@ -19,7 +19,7 @@
 #define SAFE_PROG_HZ  12000000u
 
 // ---- Benchmark parameters ----
-#define N_TRIALS  10          // default trials for "Run Benchmark"
+#define N_TRIALS  100          // default trials for "Run Benchmark"
 #define READ_SEQ_SIZE      (256u * 1024u)  // 256 KB sequential read window
 #define RAND_READ_ITERS    16u         // number of 256B random reads per run
 

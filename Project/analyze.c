@@ -6,6 +6,8 @@
 #include "pico/stdlib.h"
 #include "ff.h"
 #include "config.h"
+#include "flash.h"   // for read_jedec_id()
+
 
 typedef struct {
     char  model[48];
@@ -13,6 +15,8 @@ typedef struct {
     char  family[64];
     double cap_mbit;
     char  jedec[24];
+    uint8_t  jedec_mfg;   // NEW: parsed mfg byte
+    uint16_t jedec_dev;   // NEW: parsed 2-byte device code (hi:lo)
     double typ_erase_ms;
     double max_erase_ms;
     double typ_erase32_ms;
@@ -26,6 +30,7 @@ typedef struct {
     char  v_range[24];
     double endurance;
 } chip_ref_t;
+
 
 // Files we read
 #define BENCH_PATH "0:/pico_test/benchmark.csv"
@@ -44,6 +49,15 @@ static void strip_bom(char *s) {
     if (u[0]==0xEF && u[1]==0xBB && u[2]==0xBF) {
         memmove(s, s+3, strlen(s+3)+1);
     }
+}
+
+static int find_col_multi(char **hdr, int n, const char *alts[], int nalts) {
+    for (int a = 0; a < nalts; ++a) {
+        for (int i = 0; i < n; ++i) {
+            if (!strcasecmp(hdr[i], alts[a])) return i;
+        }
+    }
+    return -1;
 }
 
 // Trim spaces and trailing CR/LF
@@ -124,52 +138,6 @@ static inline double write_kBps_to_prog_ms(double write_kBps) {
     return t_s * 1000.0;               // ms
 }
 
-// Read the *last* 12 MHz row from benchmark.csv into outputs.
-// Returns true if found.
-static bool load_bench_12mhz(double *avg_erase_ms, double *avg_write_kBps,
-                             double *avg_readseq_kBps, uint32_t *verify_errors)
-{
-    FRESULT fr = f_mount(&g_fs_ana, "0:", 1);
-    if (fr != FR_OK) { printf("ERROR: mount err=%d\r\n", fr); return false; }
-
-    FIL f; fr = f_open(&f, BENCH_PATH, FA_READ);
-    if (fr != FR_OK) { printf("ERROR: open %s err=%d\r\n", BENCH_PATH, fr); f_unmount("0:"); return false; }
-
-    // benchmark.csv header:
-    // timestamp_ms,spi_hz,avg_erase_ms,avg_write256_kBps,avg_readseq_kBps,avg_readrand_MBps,verify_errors
-    char line[256];
-    // skip header
-    if (!f_gets(line, sizeof line, &f)) { f_close(&f); f_unmount("0:"); return false; }
-
-    bool found = false;
-    // We’ll keep the *last* 12 MHz row
-    while (f_gets(line, sizeof line, &f)) {
-        // quick parse
-        // ts, hz, e_ms, w_kBps, rseq_kBps, rrand_MBps, verr
-        char *p = line;
-        // token 0: ts
-        strtoul(p, &p, 10);              if (*p==',') ++p;
-        uint32_t hz = strtoul(p, &p, 10); if (*p==',') ++p;
-        double e_ms  = strtod(p, &p);     if (*p==',') ++p;
-        double w_kBps= strtod(p, &p);     if (*p==',') ++p;
-        double r_kBps= strtod(p, &p);     if (*p==',') ++p;
-        strtod(p, &p);                    if (*p==',') ++p;  // skip readrand MB/s
-        uint32_t verr = (uint32_t)strtoul(p, &p, 10);
-
-        if (hz == 12000000u) {
-            found = true;
-            *avg_erase_ms = e_ms;
-            *avg_write_kBps = w_kBps;
-            *avg_readseq_kBps = r_kBps;
-            *verify_errors = verr;
-        }
-    }
-
-    f_close(&f);
-    f_unmount("0:");
-    return found;
-}
-
 // Split by commas, keeping empty fields (",,") and handling quotes & BOM
 static int csv_split_simple_keep_empty(char *line, char *cols[], int max_cols) {
     strip_bom(line);
@@ -199,6 +167,145 @@ static int csv_split_simple_keep_empty(char *line, char *cols[], int max_cols) {
 // safe strtod for optional numeric fields (empty -> 0.0)
 static double to_dflt0(const char *s) { return (s && *s) ? strtod(s, NULL) : 0.0; }
 
+// Read the *last* 12 MHz row from benchmark.csv into outputs.
+// Returns true if found.
+// Read the *last* 12 MHz row from benchmark.csv into outputs.
+// Works with either header order:
+//   A) jedec_hex,spi_hz,avg_erase_ms,...,verify_errors
+//   B) timestamp_ms,jedec_hex,spi_hz,avg_erase_ms,...,verify_errors
+static bool load_bench_12mhz(double *avg_erase_ms, double *avg_write_kBps,
+                             double *avg_readseq_kBps, uint32_t *verify_errors)
+{
+    FRESULT fr = f_mount(&g_fs_ana, "0:", 1);
+    if (fr != FR_OK) { printf("ERROR: mount err=%d\r\n", fr); return false; }
+
+    FIL f; fr = f_open(&f, BENCH_PATH, FA_READ);
+    if (fr != FR_OK) { printf("ERROR: open %s err=%d\r\n", BENCH_PATH, fr); f_unmount("0:"); return false; }
+
+    char line[256];
+
+    // --- read and parse header ---
+    if (!f_gets(line, sizeof line, &f)) { f_close(&f); f_unmount("0:"); return false; }
+    char *hdr[16] = {0};
+    int nh = csv_split_simple_keep_empty(line, hdr, 16);
+    if (nh <= 0) { f_close(&f); f_unmount("0:"); return false; }
+
+    // locate the columns we need (support a few alternative names)
+    const char *ALT_HZ[]    = {"spi_hz", "hz"};
+    const char *ALT_ERASE[] = {"avg_erase_ms", "erase_ms"};
+    const char *ALT_WK[]    = {"avg_write256_kBps", "avg_write_kBps"};
+    const char *ALT_RK[]    = {"avg_readseq_kBps", "avg_read_kBps"};
+    const char *ALT_VER[]   = {"verify_errors", "total_verify_errors", "total_verify_errs"};
+
+    int i_hz    = find_col_multi(hdr, nh, ALT_HZ,    (int)(sizeof ALT_HZ   /sizeof ALT_HZ[0]));
+    int i_erase = find_col_multi(hdr, nh, ALT_ERASE, (int)(sizeof ALT_ERASE/sizeof ALT_ERASE[0]));
+    int i_wk    = find_col_multi(hdr, nh, ALT_WK,    (int)(sizeof ALT_WK   /sizeof ALT_WK[0]));
+    int i_rk    = find_col_multi(hdr, nh, ALT_RK,    (int)(sizeof ALT_RK   /sizeof ALT_RK[0]));
+    int i_ver   = find_col_multi(hdr, nh, ALT_VER,   (int)(sizeof ALT_VER  /sizeof ALT_VER[0]));
+
+    if (i_hz < 0 || i_erase < 0 || i_wk < 0 || i_rk < 0 || i_ver < 0) {
+        printf("ERROR: benchmark.csv header missing required columns.\r\n");
+        f_close(&f); f_unmount("0:"); 
+        return false;
+    }
+
+    bool found = false;
+
+    // --- read data rows ---
+    while (f_gets(line, sizeof line, &f)) {
+        char *col[16] = {0};
+        int n = csv_split_simple_keep_empty(line, col, 16);
+        if (n <= i_ver) continue; // not enough columns
+
+        uint32_t hz   = (uint32_t)strtoul(col[i_hz], NULL, 10);
+        double   e_ms = to_dflt0(col[i_erase]);
+        double   w_kB = to_dflt0(col[i_wk]);
+        double   r_kB = to_dflt0(col[i_rk]);
+        uint32_t verr = (uint32_t)strtoul(col[i_ver], NULL, 10);
+
+        if (hz == 12000000u) {
+            // keep the *last* 12 MHz row if there are multiple
+            found = true;
+            *avg_erase_ms     = e_ms;
+            *avg_write_kBps   = w_kB;
+            *avg_readseq_kBps = r_kB;
+            *verify_errors    = verr;
+        }
+    }
+
+    f_close(&f);
+    f_unmount("0:");
+    return found;
+}
+
+static bool parse_jedec_bytes(const char *s, uint8_t *mfg, uint16_t *dev){
+    // accepts "JEDEC=9D:4013", "JEDEC-9D 4013", "9D 40 13" etc
+    unsigned mi=0, d=0;
+    // strip common prefixes
+    while (*s==' ' || *s=='J' || *s=='E' || *s=='D' || *s=='C' || *s=='=' || *s=='-' ) s++;
+    // try patterns
+    if (sscanf(s, "%x:%x", &mi, &d) == 2) { *mfg=(uint8_t)mi; *dev=(uint16_t)d; return true; }
+    unsigned b0=0,b1=0,b2=0;
+    if (sscanf(s, "%x %x %x", &b0, &b1, &b2) == 3) { *mfg=(uint8_t)b0; *dev=(uint16_t)((b1<<8)|b2); return true; }
+    return false;
+}
+
+typedef struct {
+    char  model[64], company[64], family[64];
+    double cap_mbit;
+    char  jedec_raw[64];
+    uint8_t jedec_mfg; uint16_t jedec_dev;
+    double typ_erase_ms, max_erase_ms;
+    double typ_prog_ms,  max_prog_ms;
+    double read50_mb_s;
+} ref_row_t;
+
+static void get_live_jedec(uint8_t id[3]){
+    // call your existing flash helper
+    read_jedec_id(id); // returns 3 bytes: mfg, devHi, devLo
+}
+
+static double score_ref(const ref_row_t *r,
+                        double erase_ms, double prog_ms,
+                        double read_seq_MBps_12MHz, // from averages at 12 MHz
+                        uint8_t live_mfg, uint16_t live_dev,
+                        double cap_meas_mbit,
+                        bool write_unreliable)
+{
+    // scale read to 50 MHz estimate if you only have 12 MHz
+    double read50_est = read_seq_MBps_12MHz * (50.0/12.0);
+
+    double score = 0.0;
+
+    // JEDEC: hard gate
+    if (live_mfg && live_dev) {
+        if (r->jedec_mfg != 0 || r->jedec_dev != 0) {
+            if (!(r->jedec_mfg == live_mfg && r->jedec_dev == live_dev)) score += 100.0;
+        }
+    }
+
+    // Capacity penalty (if you know your tested part size)
+    if (cap_meas_mbit > 0 && r->cap_mbit > 0) {
+        score += 2.0 * fabs(cap_meas_mbit - r->cap_mbit);
+    }
+
+    // Relative timing errors (use small weights)
+    if (r->typ_erase_ms > 0) {
+        double re = (erase_ms - r->typ_erase_ms) / r->typ_erase_ms;
+        score += 5.0 * re * re;
+    }
+    if (!write_unreliable && r->typ_prog_ms > 0) {
+        double rp = (prog_ms - r->typ_prog_ms) / r->typ_prog_ms;
+        score += 3.0 * rp * rp;
+    }
+    if (r->read50_mb_s > 0) {
+        double rr = (read50_est - r->read50_mb_s) / r->read50_mb_s;
+        score += 4.0 * rr * rr;
+    }
+    return score;
+}
+
+
 static int parse_ref_line(const char *line_in, chip_ref_t *out) {
     // Expected columns (17 total; last two optional):
     // chip_model,company,chip_family,capacity_mbit,jedec_id,
@@ -225,6 +332,10 @@ static int parse_ref_line(const char *line_in, chip_ref_t *out) {
 
     out->cap_mbit       = to_dflt0(col[3]);
     strncpy(out->jedec,  col[4], sizeof out->jedec);    out->jedec[sizeof out->jedec-1]=0;
+    // NEW: parse JEDEC text (accepts formats like "9D 40 13" or "JEDEC=9D:4013")
+    out->jedec_mfg = 0;
+    out->jedec_dev = 0;
+    (void)parse_jedec_bytes(out->jedec, &out->jedec_mfg, &out->jedec_dev);
 
     out->typ_erase_ms   = to_dflt0(col[5]);
     out->max_erase_ms   = to_dflt0(col[6]);
@@ -254,6 +365,13 @@ void identify_chip_from_bench_12mhz(void)
     }
     if (verr) printf("NOTE: verify_errors=%u in averages; write metric may be unreliable.\r\n", verr);
 
+    // Read live JEDEC from the device
+    uint8_t live_id[3] = {0};
+    read_jedec_id(live_id);           // from flash.h
+    uint8_t  live_mfg = live_id[0];
+    uint16_t live_dev = (uint16_t)((live_id[1] << 8) | live_id[2]);
+    bool write_unreliable = (verr != 0);
+
     // Normalize to the fields in the reference:
     double prog_ms_meas = write_kBps_to_prog_ms(w_kBps);
     double read50_mb_s_meas = (rseq_kBps / 1024.0) * (50.0 / 12.0); // scale roughly with clock
@@ -280,6 +398,7 @@ void identify_chip_from_bench_12mhz(void)
     int accepted = 0;
 
     while (f_gets(line, sizeof line, &f)) {
+
         // skip empty lines
         if (line[0] == 0 || line[0] == '\r' || line[0] == '\n') continue;
 
@@ -297,6 +416,25 @@ void identify_chip_from_bench_12mhz(void)
         // Weighted L1 distance
         double score = w_erase*d_erase + w_prog*d_prog + w_read*d_read;
 
+        // JEDEC influence: heavy penalty if a row has JEDEC and it doesn't match;
+        // small bonus if it does match. If the row has no JEDEC, leave score as-is.
+        if (live_mfg || live_dev) {
+            if (r.jedec_mfg || r.jedec_dev) {
+                if (r.jedec_mfg == live_mfg && r.jedec_dev == live_dev) {
+                    score -= 0.25;  // bonus for exact match (clamped by min later if needed)
+                } else {
+                    score += 100.0; // large penalty for mismatch
+                }
+            }
+        }
+
+        // If write was unreliable, down-weight program contribution by blending it away:
+        if (write_unreliable) {
+            // remove most of the prog error influence (already counted in score); keep a tiny hint
+            score -= w_prog*d_prog;            // remove the prog term we added
+            score += 0.15 * d_prog;            // add back a very small fraction to avoid zeroing it
+        }
+
         // Maintain Top-3 lowest scores
         for (int i=0;i<3;i++){
             if (score < best[i].score) {
@@ -310,7 +448,7 @@ void identify_chip_from_bench_12mhz(void)
     f_unmount("0:");
 
     printf("\r\n=== Chip Identification (12 MHz) ===\r\n");
-    printf("Measured: erase=%.2f ms, prog256=%.3f ms, read50=%.2f MB/s\r\n",
+    printf("Measured: erase=%.2f ms, prog256=%.3f ms, read50~=%.2f MB/s\r\n",
            e_ms, prog_ms_meas, read50_mb_s_meas);
     printf("Reference rows accepted: %d\r\n", accepted);
     printf("Top matches:\r\n");

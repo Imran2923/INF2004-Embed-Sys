@@ -21,6 +21,14 @@ static void _friendly_mount_error(FRESULT fr){
     }
 }
 
+static FRESULT ensure_sd_dir(void){
+    FRESULT fr = f_mount(&g_fs, "0:", 1);
+    if (fr != FR_OK) return fr;
+    f_mkdir("0:/pico_test");   // ok if it already exists
+    return FR_OK;
+}
+
+
 // ---------------- results.csv (per-measurement rows) ----------------
 
 FRESULT csv_begin(void) {
@@ -163,7 +171,8 @@ FRESULT bench_csv_begin(void) {
 
     if (f_size(&g_bench_csv) == 0) {
         const char *hdr =
-            "timestamp_ms,spi_hz,avg_erase_ms,avg_write256_kBps,avg_readseq_kBps,avg_readrand_MBps,verify_errors\r\n";
+            "timestamp_ms,jedec_hex,spi_hz,avg_erase_ms,avg_write256_kBps,avg_readseq_kBps,avg_readrand_MBps,verify_errors\r\n"
+;
         UINT bw = 0;
         fr = f_write(&g_bench_csv, hdr, (UINT)strlen(hdr), &bw);
         if (fr != FR_OK || bw != (UINT)strlen(hdr)) {
@@ -177,19 +186,23 @@ FRESULT bench_csv_begin(void) {
     return FR_OK;
 }
 
-void bench_csv_append_avg(uint32_t hz,
+void bench_csv_append_avg(const char *jedec_hex,
+                          uint32_t hz,
                           double avg_erase_ms,
                           double avg_write_kBps,
                           double avg_readseq_kBps,
                           double avg_readrand_MBps,
                           uint32_t verify_errors)
+
 {
     if (!g_bench_open) return;
     char line[196];
     uint32_t t_ms = to_ms_since_boot(get_absolute_time());
     int n = snprintf(line, sizeof line,
-        "%u,%u,%.3f,%.3f,%.3f,%.3f,%u\r\n",
-        t_ms, hz, avg_erase_ms, avg_write_kBps, avg_readseq_kBps, avg_readrand_MBps, verify_errors);
+    "%u,%s,%u,%.3f,%.3f,%.3f,%.3f,%u\r\n",
+    t_ms,
+    (jedec_hex && *jedec_hex) ? jedec_hex : "000000",
+    hz, avg_erase_ms, avg_write_kBps, avg_readseq_kBps, avg_readrand_MBps, verify_errors);
     if (n > 0 && n < (int)sizeof line) {
         UINT bw=0; FRESULT fr = f_write(&g_bench_csv, line, (UINT)n, &bw);
         if (fr != FR_OK || bw != (UINT)n) printf("ERROR: benchmark.csv append err=%d\r\n", fr);

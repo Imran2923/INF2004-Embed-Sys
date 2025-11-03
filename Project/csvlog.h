@@ -23,9 +23,13 @@ FRESULT print_csv(void);
 
 // Averages CSV (benchmark.csv)
 FRESULT bench_csv_begin(void);
-void    bench_csv_append_avg(uint32_t hz, double avg_erase_ms,
-                             double avg_write_kBps, double avg_readseq_kBps,
-                             double avg_readrand_MBps, uint32_t verify_errors);
+void bench_csv_append_avg(const char *jedec_hex,
+                          uint32_t hz,
+                          double avg_erase_ms,
+                          double avg_write_kBps,
+                          double avg_readseq_kBps,
+                          double avg_readrand_MBps,
+                          uint32_t verify_errors);
 void    bench_csv_end(void);
 FRESULT csv_truncate_to(DWORD pos);
 void csv_undo_current_session(void);

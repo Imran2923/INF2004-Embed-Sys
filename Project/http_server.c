@@ -196,6 +196,11 @@ static void send_file_download(struct tcp_pcb *pcb, const char *path_qs) {
     char rel[256]; strncpy(rel, path_qs, sizeof rel); rel[sizeof rel-1]=0; url_decode(rel);
     for (char *p=rel; *p; ++p) if (*p=='\\') *p='/';
     if (strstr(rel, "..")) { http_write_str(pcb, HTTP404); return; }
+    // derive a nice filename for Content-Disposition
+    const char *fname = strrchr(rel, '/');
+    fname = fname ? fname + 1 : rel;  // basename without folders
+    if (!*fname) fname = "download.bin"; // fallback
+
 
     char abs[256]; snprintf(abs, sizeof abs, "%s/%s", SD_WEB_BASE, (rel[0]=='/') ? rel+1 : rel);
 
@@ -205,9 +210,14 @@ static void send_file_download(struct tcp_pcb *pcb, const char *path_qs) {
     FIL f; fr = f_open(&f, abs, FA_READ);
     if (fr != FR_OK) { f_mount(0,"",0); http_write_str(pcb, HTTP404); return; }
 
-    http_write_str(pcb,
-      "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
-      "Connection: close\r\n\r\n");
+    char hdr[256];
+    snprintf(hdr, sizeof hdr,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/octet-stream\r\n"
+        "Content-Disposition: attachment; filename=\"%s\"\r\n"
+        "Connection: close\r\n\r\n", fname);
+    http_write_str(pcb, hdr);
+
 
     static uint8_t buf[1024];
     UINT br;
