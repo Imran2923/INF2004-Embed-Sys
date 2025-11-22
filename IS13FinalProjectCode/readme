@@ -1,1 +1,150 @@
+📌 Features
+🔧 Core Benchmarking
+
+- Multi-frequency benchmarking across configurable SPI clock speeds.
+
+- Repeated trial execution (default: 100 runs).
+
+Tests included:
+
+- Sector erase (4KB)
+
+- Page program (256B)
+
+- Sequential read
+
+- Random read
+
+- Verification after writes with error count reporting.
+
+🌐 Web Interface (Pico W)
+
+- Start benchmarks from a browser.
+
+- Live output of benchmark progress.
+
+- View CSV results stored on SD card through the web interface.
+
+- Chip identification displayed to the user.
+
+💾 SD Card Logging
+
+- Per-run and averaged result logging into CSV files.
+
+Automatic generation of:
+
+- results.csv (per-run entries)
+
+- benchmark.csv (averaged summaries)
+
+🔍 Flash Chip Analysis
+
+- JEDEC ID detection
+
+- SFDP header parsing
+
+- Chip-specific safe clock rates (Winbond, SST, Unknown fallback)
+
+📁 Project Structure
+
+/src
+    spi_flash.c        – main program, menu handling, SD card control
+    flash.c            – low-level flash SPI communication
+    web_actions.c      – web server command handlers
+    web_output.c       – text buffering for web output
+    web_pages.c        – HTML page templates
+
+/bench
+    bench.c            – all benchmark logic (serial + web)
+    analyze.c          – JEDEC/SFDP analysis functions
+    bench.h            – benchmark definitions and shared structures
+
+/include
+    flash.h
+    bench.h
+    analyze.h
+    web_output.h
+    web_actions.h
+
+/docs
+    (optional) design notes, diagrams, chip datasheets
+
+/results
+    (optional) exported CSV logs for demonstrations
+
+
+
+🛠️ How to Build & Flash
+Requirements
+
+Pico SDK installed
+
+CMake + Ninja
+
+ARM GCC toolchain
+
+VS Code with Pico extension (optional but recommended)
+
+Flash to Pico
+
+Copy spi_flash.uf2 from the build directory into the Pico's USB mass storage device.
+
+▶️ How to Run
+1. Serial Mode (USB)
+
+Open a serial terminal (115200 baud).
+You will see a menu:
+
+1. Identify Flash Chip
+2. Run Benchmarks
+3. Run Benchmarks & Save CSV
+4. Read SD Results
+...
+
+Benchmark results will stream directly over USB.
+
+2. Web Interface (Pico W)
+
+1. The Pico will display its IP on boot.
+
+2. Open a browser → enter:
+http://<pico-ip>/
+
+3. Use the menu to:
+
+Run benchmarks (web-safe mode)
+
+Read results.csv
+
+Identify flash chip
+
+📊 Output Format
+Per-run CSV Logging
+
+Each operation logs:
+chip,spi_hz,operation,address,size,time_us,speed_mbps,verify_errors,status_reg
+
+Averaged Logging
+chip,spi_hz,erase_ms,write_kbs,read_seq_kbs,read_rand_mbps,total_errors
+
+⚠️ Notes & Known Limitations
+
+Web benchmarking uses non-blocking “web safe” functions to prevent Wi-Fi timeouts.
+
+Some SST flash chips use special AAI programming modes and may require lower SPI clock speeds.
+
+The web interface may be slower due to background Wi-Fi polling.
+
+👨‍💻 Authors
+
+BENJAMIN TEY ZHI XIAN
+TAN YI KANG
+MOHAMAD IMRAN BIN MOHAMAD KEFLI
+HAZIQ BIN AFFENDY
+SABIHAH AMIRUDEEN
+
+
+
+
+
 
