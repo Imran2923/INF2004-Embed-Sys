@@ -66,12 +66,6 @@ Automatic generation of:
     web_output.h
     web_actions.h
 
-/docs
-    (optional) design notes, diagrams, chip datasheets
-
-/results
-    (optional) exported CSV logs for demonstrations
-
 
 
 🛠️ How to Build & Flash
