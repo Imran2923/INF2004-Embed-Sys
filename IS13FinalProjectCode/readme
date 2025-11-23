@@ -112,6 +112,8 @@ Read results.csv
 
 Identify flash chip
 
+Ensure that spichips.csv is already inserted into the SD Card under a folder called "pico_test"
+
 📊 Output Format
 Per-run CSV Logging
 
