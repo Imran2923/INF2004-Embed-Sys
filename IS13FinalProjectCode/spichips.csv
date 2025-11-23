@@ -1,0 +1,6 @@
+"chip_model,company,chip_family,capacity_mbit,jedec_id,typ_4kb_sector_erase_ms,max_4kb_sector_erase_ms,typ_32kb_block_erase_ms,max_32kb_block_erase_ms,typ_64kb_block_erase_ms,max_64kb_block_erase_ms,max_clock_read_mhz,typ_page_program_ms,max_page_program_ms,read_speed_50mhz_mb_s,operating_voltage_range,endurance_cycles"
+"AT25FF161A,Renesas Electronics,AT25FF Series,16,""1F:8625"",40,130,310,830,600,1600,133,2.5,7,25, , "
+"IS25LP064A,Integrated Silicon Solution (ISSI),""IS25LP A series"",64,""9D:4013"",70,300,100,500,150,1000,133,0.2,0.8,6.25, , "
+"AT25QF064A,Renesas Electronics,AT25QF Series,64,""1F:17"",60,150,350,900,700,2000,133,0.6,3,50,""2.7-3.6V"",100000"
+"W25Q32FVSIG,Winbond Electronics,W25Q Series,32,""EF 40 16"",100,400,120,1600,150,2000,104,0.7,3,50,""2.7–3.6 V"",100000"
+"SST26VF016B,Microchip (SST),SST26VF Series,16,""BF 26 41"",18,25,18,25,18,25,104,1.0,1.5,50,""2.3–3.6 V"",100000"
