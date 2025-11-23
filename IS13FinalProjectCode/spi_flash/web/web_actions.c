@@ -1,0 +1,198 @@
+#include "web_actions.h"
+#include "web_output.h"
+#include "web_pages.h" 
+#include "flash.h"
+#include "csvlog.h"
+#include "analyze.h"
+#include "config.h"
+#include "bench.h"
+#include "net.h"
+#include "http_server.h"
+#include "pico/stdlib.h"
+#include "hardware/spi.h"
+#include "ff.h"
+
+void web_output_flush(void) {
+    // Currently a no-op.
+    // The HTTP server grabs the whole buffer via
+    // web_output_get_buffer()/web_output_get_length() when the handler returns.
+    // This stub exists so handlers can call web_output_flush() without
+    // causing link errors. Later you can implement real streaming here.
+}
+
+static void web_print_back_to_menu(void) {
+    web_printf("\r\n");
+    web_printf("--------------------------------------------------\r\n");
+    web_printf("Back to menu: open http://<PICO_IP>/ in your browser\r\n");
+    web_printf("or use your browser's Back button.\r\n");
+}
+
+void web_test_connection(void) {
+    reset_web_output();
+    
+    web_printf("=== Test Connection ===\r\n\r\n");
+
+    uint8_t id[3] = {0};
+    read_jedec_id(id);
+
+    web_printf("JEDEC ID: %02X %02X %02X\r\n", id[0], id[1], id[2]);
+
+    uint8_t sr1 = read_status(0x05);
+    uint8_t sr2 = read_status(0x35);
+
+    web_printf("SR1: %02X  SR2: %02X\r\n", sr1, sr2);
+
+    if (id[0] == 0x00 && id[1] == 0x00 && id[2] == 0x00) {
+        web_printf("Result: FAILED - device not responding.\r\n");
+    } else {
+        web_printf("Result: PASSED - device responding and readable.\r\n");
+    }
+
+    web_printf("=== Done ===\r\n");
+}
+
+void web_read_results(void) {
+    reset_web_output();
+    web_printf("=== Results CSV ===\r\n\r\n");
+    
+    FATFS fs;
+    FRESULT fr = f_mount(&fs, "0:", 1);
+    if (fr != FR_OK) {
+        web_printf("ERROR: SD mount failed (%d)\r\n", fr);
+        web_output_flush();
+        return;
+    }
+
+    FIL f;
+    fr = f_open(&f, CSV_PATH, FA_READ);
+    if (fr != FR_OK) {
+        web_printf("ERROR: Could not open %s (%d)\r\n", CSV_PATH, fr);
+        web_output_flush();
+        f_mount(0, "", 0);
+        return;
+    }
+
+    char line[256];
+    int counter = 0;
+
+    while (f_gets(line, sizeof line, &f)) {
+        web_printf("%s", line);
+
+        // prevent overflow of web output buffer
+        if (++counter >= 50) {
+            web_output_flush();  
+            counter = 0;
+        }
+    }
+    
+    f_close(&f);
+    f_mount(0, "", 0);
+
+    // final flush to ensure content reaches browser
+    web_output_flush();
+
+    web_printf("\r\n=== End of File ===\r\n");
+    web_print_back_to_menu();
+    web_output_flush();
+}
+
+
+void web_erase_last_session(void) {
+    reset_web_output();
+    web_printf("Erasing last session...\r\n");
+    csv_erase_last_session();
+    web_printf("Last session erased from results.csv\r\n");
+}
+
+void web_identify_chip(void) {
+    reset_web_output();
+    web_printf("=== Identify Chip ===\r\n\r\n");
+
+    // Use the web-aware version so all text goes to the browser
+    identify_chip_from_bench_12mhz_with_output(web_printf);
+
+    web_printf("\r\n");
+    web_print_back_to_menu();
+}
+
+void web_run_benchmark(void) {
+    reset_web_output();
+    run_fast_benchmark_with_output(web_printf);
+    web_print_back_to_menu();
+}
+
+void web_run_benchmark_save(void) {
+    reset_web_output();
+    web_printf("=== Running Benchmark + Save ===\r\n\r\n");
+    web_printf("This will take 1-2 minutes. Saving to SD card...\r\n\r\n");
+    
+    FRESULT fr = csv_begin();
+    if (fr != FR_OK) {
+        web_printf("CSV logging disabled.\r\n");
+        run_benchmarks_with_trials_web_safe(N_TRIALS, false, true, (printf_func_t)web_printf);
+    } else {
+        (void)csv_mark_session_start();
+        run_benchmarks_with_trials_web_safe(N_TRIALS, true, true, (printf_func_t)web_printf);
+        csv_end();
+    }
+    
+    web_printf("\r\n=== Benchmark + Save Complete ===\r\n");
+    web_print_back_to_menu();
+}
+
+void web_run_benchmark_100(void) {
+    reset_web_output();
+    web_printf("=== Running 100-run Benchmark ===\r\n\r\n");
+    web_printf("This will take approximately 2 minutes...\r\n\r\n");
+    
+    run_fast_benchmark_with_output(web_printf);  // Use the web-safe fast benchmark
+    
+    web_printf("\r\n=== 100-run Demo Complete ===\r\n");
+    web_print_back_to_menu();
+}
+
+void web_show_status(void) {
+    reset_web_output();
+    web_printf("=== System Status ===\r\n\r\n");
+    web_printf("WiFi: %s\r\n", wifi_is_connected() ? "Connected" : "Disconnected");
+    web_printf("IP: %s\r\n", wifi_get_ip_str());
+    web_printf("HTTP Server: %s\r\n", http_server_is_running() ? "Running" : "Stopped");
+    web_printf("SD Card: %s\r\n", sd_ok() ? "Connected" : "Not Connected");
+    web_print_back_to_menu();
+}
+
+void web_backup_flash(void) {
+    reset_web_output();
+    web_printf("=== Backing Up Flash to SD Card ===\r\n\r\n");
+    web_printf("Starting backup of 4MB flash chip...\r\n");
+    web_printf("This may take 1-2 minutes.\r\n\r\n");
+    
+    FRESULT fr = flash_backup_to_file("0:/pico_test/flash_backup.bin", FLASH_SIZE_BYTES);
+    
+    if (fr == FR_OK) {
+        web_printf("\r\n✓ Backup successful!\r\n");
+        web_printf("File saved: /pico_test/flash_backup.bin\r\n");
+        web_printf("Size: 4 MB (4,194,304 bytes)\r\n");
+    } else {
+        web_printf("\r\n✗ Backup failed (error %d)\r\n", fr);
+        web_printf("Check SD card connection.\r\n");
+    }
+}
+
+void web_restore_flash(void) {
+    reset_web_output();
+    web_printf("=== Restoring Flash from SD Card ===\r\n\r\n");
+    web_printf("⚠️ WARNING: This will OVERWRITE your flash chip!\r\n");
+    web_printf("Starting restore from backup file...\r\n");
+    web_printf("This may take 2-3 minutes.\r\n\r\n");
+    
+    FRESULT fr = flash_restore_from_file("0:/pico_test/flash_backup.bin", FLASH_SIZE_BYTES, true);
+    
+    if (fr == FR_OK) {
+        web_printf("\r\n✓ Restore successful!\r\n");
+        web_printf("Flash chip restored from backup (verified).\r\n");
+    } else {
+        web_printf("\r\n✗ Restore failed (error %d)\r\n", fr);
+        web_printf("Check SD card and backup file.\r\n");
+    }
+}
